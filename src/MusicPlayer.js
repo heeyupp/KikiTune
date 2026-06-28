@@ -1412,8 +1412,12 @@ class MusicPlayer {
         }
     }
 
-    async handleAutoplay() {
+    async handleAutoplay(retryCount = 0) {
         if (!this.autoplay || typeof this.autoplay !== 'string') return;
+        if (retryCount >= 3) {
+            console.log('🎲 Autoplay: max retries reached, stopping');
+            return;
+        }
 
         try {
             const year = new Date().getFullYear();
@@ -1438,15 +1442,15 @@ class MusicPlayer {
             console.log(`🎲 Autoplay: searching "${randomKeyword}" (genre: ${this.autoplay})`);
 
             const YouTube = require('./YouTube');
-            const results = await YouTube.search(randomKeyword, 8, this.guild.id);
+            const results = await YouTube.search(randomKeyword, 30, this.guild.id);
 
             if (!results || results.length === 0) {
-                console.log('🎲 Autoplay: no search results found');
-                return;
+                console.log('🎲 Autoplay: no search results, trying another keyword');
+                return await this.handleAutoplay(retryCount + 1);
             }
 
             const filteredResults = results.filter(track => {
-                if (track.duration && (track.duration < 30 || track.duration > 600)) return false;
+                if (track.duration && (track.duration < 30 || track.duration > 360)) return false;
 
                 const title = (track.title || '').toLowerCase();
                 const blockedKeywords = [
@@ -1456,7 +1460,9 @@ class MusicPlayer {
                     'full movie', 'full episode', 'documentary',
                     'how to', 'guide', 'tips', 'tricks', 'vlog',
                     'practice', 'exercise', 'workout', 'meditation',
-                    'asmr', 'audiobook'
+                    'asmr', 'audiobook', 'mix', 'メドレー', 'compilation',
+                    'playlist', '1 hour', '2 hour', '3 hour', 'nonstop',
+                    'ノンストップ', '광고없는'
                 ];
                 return !blockedKeywords.some(keyword => title.includes(keyword));
             });
@@ -1464,8 +1470,8 @@ class MusicPlayer {
             console.log(`🎲 Autoplay: ${results.length} results → ${filteredResults.length} after filter`);
 
             if (filteredResults.length === 0) {
-                console.log('🎲 Autoplay: all results filtered out, using unfiltered');
-                filteredResults.push(...results);
+                console.log('🎲 Autoplay: no valid results, trying another keyword');
+                return await this.handleAutoplay(retryCount + 1);
             }
 
             const randomTrack = filteredResults[Math.floor(Math.random() * filteredResults.length)];
@@ -1487,10 +1493,14 @@ class MusicPlayer {
             this.currentTrack = this.queue.shift();
             await this.play(null, 0);
 
-            // Update now playing embed for autoplay track
-            const MusicEmbedManager = require('./MusicEmbedManager');
             if (global.clients && global.clients.musicEmbedManager) {
-                await global.clients.musicEmbedManager.updateNowPlayingEmbed(this);
+                if (this.nowPlayingMessage) {
+                    await global.clients.musicEmbedManager.updateNowPlayingEmbed(this);
+                } else {
+                    await global.clients.musicEmbedManager.createNewMusicEmbed(
+                        this, this.currentTrack, this.guild.members.me, null
+                    );
+                }
             }
 
         } catch (error) {

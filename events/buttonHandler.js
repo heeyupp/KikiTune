@@ -122,16 +122,8 @@ module.exports = {
     // Authorization control function
     isAuthorized(interaction, requesterId) {
         const member = interaction.member;
-
-        // ManageGuild permission check (Sunucuyu Yönet)
-        if (member.permissions.has('ManageGuild')) return true;
-
-        // DJ role check (if exists)
-        if (member.roles.cache.some(role => role.name.toLowerCase().includes('dj'))) return true;
-
-        // Music starter check
-        if (member.id === requesterId) return true;
-
+        const player = interaction.client.players.get(interaction.guild?.id);
+        if (player && member.voice.channel && player.voiceChannel?.id === member.voice.channel.id) return true;
         return false;
     },
 
@@ -362,14 +354,15 @@ module.exports = {
         // Queue tracks
         if (queueInfo.queue.length > 0) {
             let queueText = '';
-            const tracks = queueInfo.queue.slice(0, 10); // Show first 10
+            const tracks = queueInfo.queue.slice(0, 15);
 
             tracks.forEach((track, index) => {
-                queueText += `\`${index + 1}.\` **[${track.title}](${track.url})**\n`;
+                const title = track.title.length > 45 ? track.title.substring(0, 45) + '...' : track.title;
+                queueText += `\`${index + 1}.\` ${title}\n`;
             });
 
-            if (queueInfo.queue.length > 10) {
-                queueText += `\n*${await LanguageManager.getTranslation(interaction.guild?.id, 'buttonhandler.and_more', { count: queueInfo.queue.length - 10 })}*`;
+            if (queueInfo.queue.length > 15) {
+                queueText += `\n*... +${queueInfo.queue.length - 15}곡*`;
             }
 
             embed.addFields({

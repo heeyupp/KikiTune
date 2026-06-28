@@ -41,6 +41,7 @@ class YouTube {
 
             const results = await youtubedl(searchQuery, this.getYtDlpOptions({
                 dumpSingleJson: true,
+                flatPlaylist: true,
             }));
 
             if (!results || !results.entries) {
