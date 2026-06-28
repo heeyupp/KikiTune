@@ -99,10 +99,6 @@ module.exports = {
                     await this.handleAutoplay(interaction, player, requesterId);
                     break;
 
-                case 'music_lyrics':
-                    await this.handleLyrics(interaction, player);
-                    break;
-
                 default:
                     await interaction.reply({
                         content: await LanguageManager.getTranslation(guild?.id, 'buttonhandler.unknown_interaction'),
@@ -217,8 +213,7 @@ module.exports = {
             });
         }
 
-        // Sırada müzik yoksa atlanamaz
-        if (player.queue.length === 0) {
+        if (player.queue.length === 0 && !player.autoplay) {
             return await interaction.reply({
                 content: await LanguageManager.getTranslation(interaction.guild?.id, 'buttonhandler.no_songs_to_skip'),
                 flags: [1 << 6]
@@ -580,63 +575,47 @@ module.exports = {
             .setPlaceholder(await LanguageManager.getTranslation(interaction.guild?.id, 'buttonhandler.autoplay_select_genre'))
             .addOptions(
                 new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.pop'))
-                    .setValue('pop')
-                    .setEmoji('🎤'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.rock'))
-                    .setValue('rock')
-                    .setEmoji('🎸'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.hiphop'))
-                    .setValue('hiphop')
-                    .setEmoji('🎧'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.electronic'))
-                    .setValue('electronic')
-                    .setEmoji('🎛️'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.jazz'))
-                    .setValue('jazz')
-                    .setEmoji('🎷'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.classical'))
-                    .setValue('classical')
-                    .setEmoji('🎻'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.metal'))
-                    .setValue('metal')
-                    .setEmoji('🤘'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.country'))
-                    .setValue('country')
-                    .setEmoji('🤠'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.rnb'))
-                    .setValue('rnb')
-                    .setEmoji('💃'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.indie'))
-                    .setValue('indie')
-                    .setEmoji('🌿'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.latin'))
-                    .setValue('latin')
-                    .setEmoji('💃'),
-                new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.kpop'))
+                    .setLabel('K-POP')
                     .setValue('kpop')
                     .setEmoji('🇰🇷'),
                 new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.anime'))
+                    .setLabel('POP')
+                    .setValue('pop')
+                    .setEmoji('🎤'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('국내 힙합')
+                    .setValue('khiphop')
+                    .setEmoji('🎧'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('해외 힙합')
+                    .setValue('hiphop')
+                    .setEmoji('🔥'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('J-POP')
+                    .setValue('jpop')
+                    .setEmoji('🇯🇵'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('애니 OST')
                     .setValue('anime')
                     .setEmoji('🎌'),
                 new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.lofi'))
+                    .setLabel('로파이')
                     .setValue('lofi')
                     .setEmoji('🌙'),
                 new StringSelectMenuOptionBuilder()
-                    .setLabel(await LanguageManager.getTranslation(interaction.guild?.id, 'genres.random'))
+                    .setLabel('한국 발라드')
+                    .setValue('ballad')
+                    .setEmoji('🎹'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('EDM / 일렉트로닉')
+                    .setValue('electronic')
+                    .setEmoji('🎛️'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('헤비메탈')
+                    .setValue('metal')
+                    .setEmoji('🤘'),
+                new StringSelectMenuOptionBuilder()
+                    .setLabel('랜덤')
                     .setValue('random')
                     .setEmoji('🎲')
             );
@@ -755,38 +734,9 @@ module.exports = {
                 inline: false
             });
 
-            // Statistics - Fetch from all shards if sharding is enabled
-            let guilds, users, activeServers;
-
-            if (client.shard) {
-                // Sharding is enabled - fetch from all shards
-                try {
-                    // Fetch guild counts from all shards
-                    const guildCounts = await client.shard.fetchClientValues('guilds.cache.size');
-                    guilds = guildCounts.reduce((acc, count) => acc + count, 0);
-
-                    // Fetch member counts from all shards
-                    const memberCounts = await client.shard.broadcastEval(c => 
-                        c.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0)
-                    );
-                    users = memberCounts.reduce((acc, count) => acc + count, 0);
-
-                    // Fetch active players from all shards
-                    const activePlayers = await client.shard.broadcastEval(c => c.players.size);
-                    activeServers = activePlayers.reduce((acc, count) => acc + count, 0);
-                } catch (error) {
-                    console.error('Error fetching shard statistics:', error);
-                    // Fallback to local shard data
-                    guilds = client.guilds.cache.size;
-                    users = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
-                    activeServers = client.players.size;
-                }
-            } else {
-                // No sharding - use local data
-                guilds = client.guilds.cache.size;
-                users = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
-                activeServers = client.players.size;
-            }
+            const guilds = client.guilds.cache.size;
+            const users = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
+            const activeServers = client.players.size;
 
             const helpCommand = require('../commands/help.js');
             const statsServers = await LanguageManager.getTranslation(guildId, 'commands.help.stats_servers', { count: guilds });
@@ -988,143 +938,4 @@ module.exports = {
         }
     },
 
-    async handleLyrics(interaction, player) {
-        const LyricsManager = require('../src/LyricsManager');
-        const guildId = interaction.guild?.id;
-
-        try {
-            if (!player.currentTrack) {
-                return await interaction.reply({
-                    content: await LanguageManager.getTranslation(guildId, 'buttonhandler.no_song_playing'),
-                    flags: [1 << 6]
-                });
-            }
-
-            if (!player.hasLyrics || !player.hasLyrics()) {
-                const noLyricsMsg = await LanguageManager.getTranslation(guildId, 'buttonhandler.no_lyrics_found') || 'No lyrics found for this song.';
-                return await interaction.reply({
-                    content: `🎤 ${noLyricsMsg}`,
-                    flags: [1 << 6]
-                });
-            }
-
-            await interaction.deferReply({ ephemeral: true });
-
-            const lyricsData = player.currentLyrics;
-            const pages = LyricsManager.formatFullLyrics(lyricsData, 4000);
-
-            if (pages.length === 0) {
-                return await interaction.editReply({
-                    content: await LanguageManager.getTranslation(guildId, 'buttonhandler.lyrics_unavailable') || 'Lyrics are unavailable.'
-                });
-            }
-
-            const lyricsTitle = await LanguageManager.getTranslation(guildId, 'buttonhandler.lyrics_title') || 'Song Lyrics';
-            
-            // If only one page, send directly
-            if (pages.length === 1) {
-                const embed = new EmbedBuilder()
-                    .setTitle(`🎤 ${lyricsTitle}`)
-                    .setDescription(`**${player.currentTrack.title}**\n${player.currentTrack.artist ? `*by ${player.currentTrack.artist}*\n` : ''}\n${pages[0]}`)
-                    .setColor(config.bot.embedColor)
-                    .setFooter({ text: `Source: ${lyricsData.source}` })
-                    .setTimestamp();
-
-                return await interaction.editReply({ embeds: [embed] });
-            }
-
-            // Multiple pages - send with pagination buttons
-            let currentPage = 0;
-
-            const createLyricsEmbed = (pageIndex) => {
-                return new EmbedBuilder()
-                    .setTitle(`🎤 ${lyricsTitle}`)
-                    .setDescription(`**${player.currentTrack.title}**\n${player.currentTrack.artist ? `*by ${player.currentTrack.artist}*\n` : ''}\n${pages[pageIndex]}`)
-                    .setColor(config.bot.embedColor)
-                    .setFooter({ text: `Source: ${lyricsData.source} | Page ${pageIndex + 1}/${pages.length}` })
-                    .setTimestamp();
-            };
-
-            const createPaginationButtons = (pageIndex) => {
-                const prevButton = new ButtonBuilder()
-                    .setCustomId('lyrics_prev')
-                    .setLabel('◀ Previous')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(pageIndex === 0);
-
-                const nextButton = new ButtonBuilder()
-                    .setCustomId('lyrics_next')
-                    .setLabel('Next ▶')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(pageIndex === pages.length - 1);
-                return new ActionRowBuilder().addComponents(prevButton, nextButton);
-            };
-
-            await interaction.editReply({
-                embeds: [createLyricsEmbed(currentPage)],
-                components: [createPaginationButtons(currentPage)]
-            });
-
-            // Fetch the reply message for the collector
-            const message = await interaction.fetchReply();
-
-            // Collector for pagination
-            const collector = message.createMessageComponentCollector({
-                filter: i => i.user.id === interaction.user.id,
-                time: 300000 // 5 minutes
-            });
-
-            collector.on('collect', async i => {
-                try {
-                    // Log to see what's happening
-                    console.log('🔍 Button clicked:', i.customId, 'by', i.user.tag);
-                    console.log('🔍 Current page:', currentPage, 'Total pages:', pages.length);
-
-                    if (i.customId === 'lyrics_prev' && currentPage > 0) {
-                        currentPage--;
-                    } else if (i.customId === 'lyrics_next' && currentPage < pages.length - 1) {
-                        currentPage++;
-                    }
-
-                    console.log('🔍 New page:', currentPage);
-
-                    // Try deferUpdate first, then update
-                    if (!i.deferred && !i.replied) {
-                        await i.deferUpdate();
-                    }
-
-                    await message.edit({
-                        embeds: [createLyricsEmbed(currentPage)],
-                        components: [createPaginationButtons(currentPage)]
-                    });
-
-                } catch (error) {
-                    console.error('❌ Pagination error details:', {
-                        code: error.code,
-                        message: error.message,
-                        deferred: i.deferred,
-                        replied: i.replied
-                    });
-                    
-                    // Ignore interaction timeout/unknown interaction errors
-                    if (error.code === 10062 || error.code === 10008 || error.code === 40060) {
-                        console.log('ℹ️ Interaction expired or unknown, ignoring...');
-                    }
-                }
-            });
-
-            collector.on('end', () => {
-                interaction.editReply({ components: [] }).catch(() => {});
-            });
-
-        } catch (error) {
-            console.error('❌ Lyrics handler error:', error);
-            const errorMsg = await LanguageManager.getTranslation(guildId, 'buttonhandler.lyrics_error') || 'Failed to load lyrics.';
-            if (interaction.deferred) {
-                await interaction.editReply({ content: errorMsg });
-            } else {
-                await interaction.reply({ content: errorMsg, ephemeral: true });
-            }
-        }
-    }
 };

@@ -158,10 +158,14 @@ class MusicEmbedManager {
 
         let message;
         if (interaction) {
-            if (interaction.deferred || interaction.replied) {
-                message = await interaction.editReply({ content: null, embeds: [embed], components: buttons });
-            } else {
-                message = await interaction.reply({ embeds: [embed], components: buttons });
+            try {
+                if (interaction.deferred || interaction.replied) {
+                    message = await interaction.editReply({ content: null, embeds: [embed], components: buttons });
+                } else {
+                    message = await interaction.reply({ embeds: [embed], components: buttons });
+                }
+            } catch (err) {
+                message = await player.textChannel.send({ embeds: [embed], components: buttons });
             }
         } else {
             message = await player.textChannel.send({ embeds: [embed], components: buttons });
@@ -418,7 +422,7 @@ class MusicEmbedManager {
             .setLabel(skipLabel)
             .setStyle(ButtonStyle.Secondary)
             .setEmoji('⏭️')
-            .setDisabled(disabled || player.queue.length === 0); // Sırada müzik yoksa disabled
+            .setDisabled(disabled || (player.queue.length === 0 && !player.autoplay));
 
         const stopButton = new ButtonBuilder()
             .setCustomId(`music_stop:${requesterId}:${sessionId}`)
@@ -491,20 +495,11 @@ class MusicEmbedManager {
             .setEmoji(autoplayEmoji)
             .setDisabled(disabled);
 
-        // Lyrics button (only show if lyrics available)
-        const lyricsLabel = await LanguageManager.getTranslation(guildId, 'buttons.lyrics') || 'Lyrics';
-        const lyricsButton = new ButtonBuilder()
-            .setCustomId(`music_lyrics:${requesterId}:${sessionId}`)
-            .setLabel(lyricsLabel)
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji('🎤')
-            .setDisabled(disabled || !player.hasLyrics());
-
         const row = new ActionRowBuilder()
             .addComponents(pauseButton, skipButton, stopButton, queueButton, shuffleButton);
 
         const row2 = new ActionRowBuilder()
-            .addComponents(volumeButton, loopButton, autoplayButton, lyricsButton);
+            .addComponents(volumeButton, loopButton, autoplayButton);
 
         return [row, row2];
     }

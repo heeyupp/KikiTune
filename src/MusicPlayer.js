@@ -10,12 +10,7 @@ const {
 const { EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const YouTube = require('./YouTube');
-const Spotify = require('./Spotify');
-const SoundCloud = require('./SoundCloud');
-const DirectLink = require('./DirectLink');
 const LanguageManager = require('./LanguageManager');
-const PlayerStateManager = require('./PlayerStateManager');
-const LyricsManager = require('./LyricsManager');
 const prism = require('prism-media');
 const ffmpegPath = require('ffmpeg-static');
 const { promisify } = require('util');
@@ -108,13 +103,6 @@ class MusicPlayer {
         this.lastPlaybackPosition = 0;
         this.currentTrackStartOffsetMs = 0;
 
-        // Lyrics system (button-only, no sync)
-        this.currentLyrics = null; // Lyrics data for current track
-
-        // Persistence management
-        this.stateSyncInterval = null;
-        this.stateSyncIntervalMs = 5000;
-        this.stateSaveTimeout = null;
 
         // Pause management
         this.pauseReasons = new Set();
@@ -443,33 +431,7 @@ class MusicPlayer {
         try {
             let tracks = [];
 
-            // Determine platform and get track info
-            if (platform === 'auto') {
-                platform = this.detectPlatform(query);
-            }
-
-            switch (platform) {
-                case 'youtube':
-                    tracks = await YouTube.search(query, 1, this.guild.id);
-                    break;
-                case 'spotify':
-                    // Check if it's a Spotify URL for consistency
-                    if (Spotify.isSpotifyURL(query)) {
-                        tracks = await Spotify.getFromURL(query, this.guild.id);
-                    } else {
-                        tracks = await Spotify.search(query, 1, 'track', this.guild.id);
-                    }
-                    break;
-                case 'soundcloud':
-                    tracks = await SoundCloud.search(query, 1, this.guild.id);
-                    break;
-                case 'direct':
-                    tracks = await DirectLink.getInfo(query);
-                    break;
-                default:
-                    // Default to YouTube search
-                    tracks = await YouTube.search(query, 1, this.guild.id);
-            }
+            tracks = await YouTube.search(query, 1, this.guild.id);
 
             if (!tracks || tracks.length === 0) {
                 const errorMsg = await LanguageManager.getTranslation(this.guild.id, 'musicplayer.no_results_found');
@@ -524,7 +486,6 @@ class MusicPlayer {
                 position: this.queue.length
             };
 
-            await this.persistState('queue-update');
             return result;
 
         } catch (error) {
@@ -552,7 +513,6 @@ class MusicPlayer {
                 const stats = await fs.stat(filepath);
                 if (stats.size > 0) {
                     this.downloadedFiles.add(filepath);
-                    this.scheduleStatePersist('download-cache-hit', 500);
                     return filepath;
                 }
             }
@@ -567,7 +527,6 @@ class MusicPlayer {
                         const stats = await fs.stat(filepath);
                         if (stats.size > 0) {
                             this.downloadedFiles.add(filepath);
-                            this.scheduleStatePersist('download-wait-complete', 500);
                             return filepath;
                         }
                     }
@@ -580,97 +539,25 @@ class MusicPlayer {
             // Mark as downloading
             this.downloadingFiles.add(filepath);
 
-            // For Spotify and SoundCloud - we need to use the YouTube URL
-            // These platforms have DRM protection and can't be downloaded directly
-            let downloadUrl = track.url;
-            
-            if (track.platform === 'spotify' || track.platform === 'soundcloud') {
-                // For Spotify/SoundCloud, we must use the YouTube equivalent
-                if (track.youtubeUrl) {
-                    downloadUrl = track.youtubeUrl;
-                } else {
-                    // Search YouTube and use that URL
-                    const YouTube = require('./YouTube');
-                    const query = track.platform === 'spotify' 
-                        ? `${track.title} ${track.artist}`
-                        : track.title;
-                    
-                    const results = await YouTube.search(query, 1, this.guild?.id);
-                    if (results && results.length > 0) {
-                        downloadUrl = results[0].url;
-                        track.youtubeUrl = downloadUrl; // Cache for future
-                    } else {
-                        this.downloadingFiles.delete(filepath);
-                        throw new Error('Could not find YouTube equivalent');
-                    }
-                }
-            }
+            const youtubedl = require('youtube-dl-exec');
 
-            // For YouTube, Spotify (via YouTube), SoundCloud (via YouTube) - use youtube-dl-exec
-            if (track.platform === 'youtube' || track.platform === 'spotify' || track.platform === 'soundcloud') {
-                const youtubedl = require('youtube-dl-exec');
-                
-                await youtubedl(downloadUrl, {
-                    output: filepath,
-                    format: 'bestaudio',
-                    noCheckCertificates: true,
-                    noWarnings: true,
-                    preferFreeFormats: true,
-                    addHeader: [
-                        'referer:youtube.com',
-                        'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    ],
-                    postprocessorArgs: {
-                        'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
-                    },
-                    extractAudio: true,
-                    audioFormat: 'opus'
-                });
-            } else {
-                // For DirectLink - fetch and transcode with FFmpeg
-                const fetch = await ensureFetch();
-                const response = await fetch(streamUrl, {
-                    headers: streamInfo?.httpHeaders || {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                });
-
-                if (!response.ok) {
-                    this.downloadingFiles.delete(filepath);
-                    throw new Error(`Failed to fetch: ${response.status}`);
-                }
-
-                let audioStream;
-                if (typeof response.body?.getReader === 'function' && typeof Readable.fromWeb === 'function') {
-                    audioStream = Readable.fromWeb(response.body);
-                } else {
-                    audioStream = response.body;
-                }
-
-                // Transcode to opus
-                const ffmpegProcess = new prism.FFmpeg({
-                    command: ffmpegPath,
-                    args: [
-                        '-i', 'pipe:0',
-                        '-f', 'opus',
-                        '-ar', '48000',
-                        '-ac', '2',
-                        '-b:a', '128k',
-                        '-y',
-                        filepath
-                    ]
-                });
-
-                audioStream.pipe(ffmpegProcess);
-
-                await new Promise((resolve, reject) => {
-                    ffmpegProcess.on('close', (code) => {
-                        if (code === 0) resolve();
-                        else reject(new Error(`FFmpeg exited with code ${code}`));
-                    });
-                    ffmpegProcess.on('error', reject);
-                });
-            }
+            await youtubedl(track.url, {
+                output: filepath,
+                format: 'bestaudio',
+                noCheckCertificates: true,
+                noWarnings: true,
+                preferFreeFormats: true,
+                ffmpegLocation: path.dirname(ffmpegPath),
+                addHeader: [
+                    'referer:youtube.com',
+                    'user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                ],
+                postprocessorArgs: {
+                    'ffmpeg': ['-c:a', 'libopus', '-b:a', '128k']
+                },
+                extractAudio: true,
+                audioFormat: 'opus'
+            });
 
             // Verify file
             const stats = await fs.stat(filepath);
@@ -682,7 +569,6 @@ class MusicPlayer {
 
             this.downloadedFiles.add(filepath);
             this.downloadingFiles.delete(filepath); // Remove from downloading set
-            this.scheduleStatePersist('download-complete', 500);
             return filepath;
 
         } catch (error) {
@@ -701,7 +587,6 @@ class MusicPlayer {
         try {
             await fs.unlink(filepath);
             this.downloadedFiles.delete(filepath);
-            this.scheduleStatePersist('download-removed', 500);
         } catch (error) {
             if (error.code !== 'ENOENT') {
                 console.error(`❌ Failed to delete file ${filepath}:`, error.message);
@@ -768,61 +653,7 @@ class MusicPlayer {
             }
 
             if (!streamInfo) {
-                // Get stream normally
-                switch (this.currentTrack.platform) {
-                    case 'youtube':
-                        streamInfo = await YouTube.getStream(streamUrl, this.guild.id, resumeFromSeconds);
-                        break;
-
-                    case 'spotify':
-                        // Enhanced YouTube search for Spotify tracks
-
-                        // Enhanced search query with multiple attempts
-                        const searchQueries = [
-                            `"${this.currentTrack.title}" "${this.currentTrack.artist}"`, // Exact match
-                            `${this.currentTrack.title} ${this.currentTrack.artist}`,     // Normal search
-                            `${this.currentTrack.title}`                                  // Title only
-                        ];
-
-                        let ytTrack = null;
-                        for (const query of searchQueries) {
-                            try {
-                                const results = await YouTube.search(query, 3, this.guild.id); // Get 3 results
-                                if (results && results.length > 0) {
-                                    // Prefer official videos or original versions
-                                    ytTrack = results.find(r =>
-                                        r.title.toLowerCase().includes('official') ||
-                                        r.title.toLowerCase().includes(this.currentTrack.title.toLowerCase())
-                                    ) || results[0];
-                                    if (ytTrack) break;
-                                }
-                            } catch (e) {
-                            }
-                        }
-
-                        if (ytTrack && ytTrack.url) {
-                            streamUrl = ytTrack.url;
-                            this.currentTrack.youtubeUrl = streamUrl;
-                            this.currentTrack.youtubeTitle = ytTrack.title; // Store YouTube title
-                            streamInfo = await YouTube.getStream(streamUrl, this.guild.id, resumeFromSeconds);
-                        } else {
-                            const errorMsg = await LanguageManager.getTranslation(this.guild.id, 'musicplayer.youtube_not_found_spotify').replace('{title}', this.currentTrack.title);
-                            throw new Error(errorMsg);
-                        }
-                        break;
-
-                    case 'soundcloud':
-                        streamInfo = await SoundCloud.getStream(streamUrl, this.guild.id, resumeFromSeconds);
-                        break;
-
-                    case 'direct':
-                        streamInfo = await DirectLink.getStream(streamUrl, resumeFromSeconds);
-                        break;
-
-                    default:
-                        const errorMsg = await LanguageManager.getTranslation(this.guild.id, 'musicplayer.unsupported_platform').replace('{platform}', this.currentTrack.platform);
-                        throw new Error(errorMsg);
-                }
+                streamInfo = await YouTube.getStream(streamUrl, this.guild.id, resumeFromSeconds);
             }
 
             if (!streamInfo) {
@@ -1058,12 +889,6 @@ class MusicPlayer {
             // Schedule watchdog to ensure proper completion and prevent premature transitions
             this.scheduleTrackWatchdog(streamInfo);
 
-            this.startStateSync();
-            await this.persistState(resumeFromMs > 0 ? 'resume-playback' : 'play');
-
-            // Fetch and start lyrics system
-            this.fetchAndStartLyrics();
-
             return { success: true, track: this.currentTrack };
 
         } catch (error) {
@@ -1209,13 +1034,11 @@ class MusicPlayer {
     pauseFor(reason = null) {
         if (reason) {
             this.pauseReasons.add(reason);
-            this.scheduleStatePersist('pause-update', 200);
         }
 
         const status = this.audioPlayer.state.status;
         if (status === AudioPlayerStatus.Paused) {
             this.paused = true;
-            this.scheduleStatePersist('pause', 0);
             return true;
         }
 
@@ -1223,7 +1046,6 @@ class MusicPlayer {
             const paused = this.audioPlayer.pause();
             if (paused) {
                 this.paused = true;
-                this.scheduleStatePersist('pause', 0);
                 return true;
             }
         }
@@ -1234,7 +1056,6 @@ class MusicPlayer {
     resumeFor(reason = null) {
         if (reason) {
             this.pauseReasons.delete(reason);
-            this.scheduleStatePersist('resume-update', 200);
         }
 
         if (this.pauseReasons.size > 0) {
@@ -1246,7 +1067,6 @@ class MusicPlayer {
             const resumed = this.audioPlayer.unpause();
             if (resumed) {
                 this.paused = false;
-                this.scheduleStatePersist('resume', 0);
                 return true;
             }
             return false;
@@ -1254,7 +1074,6 @@ class MusicPlayer {
 
         if (status === AudioPlayerStatus.Playing) {
             this.paused = false;
-            this.scheduleStatePersist('resume', 0);
             return true;
         }
 
@@ -1294,7 +1113,6 @@ class MusicPlayer {
                     await this.showQueueCompleted();
                 }
 
-                await this.persistState('inactivity-timeout');
             } catch (error) {
                 console.error('❌ Failed to update playback UI after inactivity timeout:', error);
             } finally {
@@ -1327,11 +1145,6 @@ class MusicPlayer {
         this.clearInactivityTimer(false);
         this.pauseReasons.clear();
         this.paused = false;
-
-        this.stopStateSync();
-        if (this.guild?.id) {
-            PlayerStateManager.removeState(this.guild.id).catch(() => {});
-        }
 
         // Clear track timer
         if (this.trackTimer) {
@@ -1372,7 +1185,6 @@ class MusicPlayer {
             this.pendingEndReason = 'skip';
             this.skipRequested = true;
             this.audioPlayer.stop(true);
-            this.scheduleStatePersist('skip', 0);
             return true;
         }
         return false;
@@ -1385,7 +1197,6 @@ class MusicPlayer {
             }
             this.currentTrack = this.previousTracks.pop();
             this.audioPlayer.stop(); // This will trigger play
-            this.scheduleStatePersist('previous', 0);
             return true;
         }
         return false;
@@ -1396,7 +1207,6 @@ class MusicPlayer {
         if (this.resource && this.resource.volume) {
             this.resource.volume.setVolume(this.volume / 100);
         }
-        this.scheduleStatePersist('volume', 200);
         return this.volume;
     }
 
@@ -1406,7 +1216,6 @@ class MusicPlayer {
                 const j = Math.floor(Math.random() * (i + 1));
                 [this.queue[i], this.queue[j]] = [this.queue[j], this.queue[i]];
             }
-            this.scheduleStatePersist('shuffle-queue', 200);
             return true;
         }
         return false;
@@ -1415,27 +1224,23 @@ class MusicPlayer {
     setLoop(mode) {
         // mode: false, 'track', 'queue'
         this.loop = mode;
-        this.scheduleStatePersist('loop', 200);
         return this.loop;
     }
 
     setShuffle(enabled) {
         this.shuffle = enabled;
-        this.scheduleStatePersist('shuffle-toggle', 200);
         return this.shuffle;
     }
 
     clearQueue() {
         const cleared = this.queue.length;
         this.queue = [];
-        this.scheduleStatePersist('clear-queue', 0);
         return cleared;
     }
 
     removeFromQueue(index) {
         if (index >= 0 && index < this.queue.length) {
             const removed = this.queue.splice(index, 1)[0];
-            this.scheduleStatePersist('queue-remove', 200);
             return removed;
         }
         return null;
@@ -1445,7 +1250,6 @@ class MusicPlayer {
         if (from >= 0 && from < this.queue.length && to >= 0 && to < this.queue.length) {
             const track = this.queue.splice(from, 1)[0];
             this.queue.splice(to, 0, track);
-            this.scheduleStatePersist('queue-move', 200);
             return true;
         }
         return false;
@@ -1589,7 +1393,6 @@ class MusicPlayer {
 
             this.clearInactivityTimer(false);
             if (this.guild?.id) {
-                await PlayerStateManager.removeState(this.guild.id);
             }
 
             setTimeout(() => {
@@ -1613,91 +1416,60 @@ class MusicPlayer {
         if (!this.autoplay || typeof this.autoplay !== 'string') return;
 
         try {
-            // Genre-specific search keywords
+            const year = new Date().getFullYear();
+
             const genreKeywords = {
-                pop: ['pop music 2024', 'top pop songs', 'pop hits official', 'best pop music'],
-                rock: ['rock music official', 'rock songs 2024', 'classic rock hits', 'best rock music'],
-                hiphop: ['hip hop music', 'rap songs official', 'hip hop 2024', 'best rap music'],
-                electronic: ['edm music', 'electronic dance music', 'house music official', 'best edm'],
-                jazz: ['jazz music', 'jazz standards', 'smooth jazz official', 'best jazz'],
-                classical: ['classical music', 'classical piano', 'orchestra music', 'best classical'],
-                metal: ['metal music official', 'heavy metal songs', 'metal 2024', 'best metal'],
-                country: ['country music official', 'country songs 2024', 'best country music'],
-                rnb: ['r&b music official', 'rnb songs 2024', 'soul music', 'best rnb'],
-                indie: ['indie music official', 'indie songs 2024', 'alternative music', 'best indie'],
-                latin: ['latin music official', 'reggaeton 2024', 'latin hits', 'best latin music'],
-                kpop: ['kpop official mv', 'kpop songs 2024', 'korean music official', 'best kpop'],
-                anime: ['anime opening official', 'anime songs official', 'anime music 2024', 'best anime op'],
-                lofi: ['lofi hip hop music', 'lofi beats official', 'chill lofi music', 'best lofi'],
-                blues: ['blues music official', 'blues songs', 'blues guitar music', 'best blues'],
-                reggae: ['reggae music official', 'reggae songs 2024', 'best reggae music'],
-                disco: ['disco music official', 'disco hits', 'best disco music'],
-                punk: ['punk rock official', 'punk music 2024', 'pop punk songs', 'best punk'],
-                ambient: ['ambient music official', 'ambient soundscape', 'atmospheric music', 'best ambient'],
-                random: ['music official video', 'top songs 2024', 'music video official', 'best music']
+                kpop: [`kpop ${year}`, '케이팝 인기곡', 'kpop hit songs', '한국 아이돌 노래', `kpop 인기차트 ${year}`],
+                pop: [`pop songs ${year}`, 'pop music hits', 'top pop songs', `pop chart ${year}`, 'trending pop music'],
+                khiphop: [`한국 힙합 ${year}`, '국내 랩 인기곡', 'korean hiphop', '한국 힙합 노래', `khiphop ${year}`],
+                hiphop: [`hip hop songs ${year}`, 'rap music hits', `hiphop chart ${year}`, 'trending rap songs', `top rap ${year}`],
+                jpop: [`jpop ${year}`, 'jpop 인기곡', '일본 노래 인기', 'japanese pop music', `jpop hits ${year}`],
+                anime: [`anime opening ${year}`, '애니 오프닝 명곡', 'anime ost best', '애니 엔딩 노래', 'anime insert song'],
+                lofi: ['lofi hip hop', 'lofi chill beats', `lofi music ${year}`, '로파이 음악', 'chill lofi songs'],
+                ballad: [`한국 발라드 ${year}`, '발라드 명곡', 'korean ballad', '감성 발라드', `발라드 인기곡 ${year}`],
+                electronic: [`edm ${year}`, 'electronic dance music', 'edm festival songs', `edm hits ${year}`, 'trending edm'],
+                metal: ['heavy metal songs', `metal music ${year}`, 'rock metal hits', 'metal band songs', `heavy metal ${year}`],
+                random: [`인기 음악 ${year}`, `trending music ${year}`, `top songs ${year}`, `music chart ${year}`, `히트곡 ${year}`],
             };
 
             const keywords = genreKeywords[this.autoplay] || genreKeywords.random;
             const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
 
-            // Search YouTube for random track
+            console.log(`🎲 Autoplay: searching "${randomKeyword}" (genre: ${this.autoplay})`);
+
             const YouTube = require('./YouTube');
-            const results = await YouTube.search(randomKeyword, 15, this.guild.id);
+            const results = await YouTube.search(randomKeyword, 8, this.guild.id);
 
             if (!results || results.length === 0) {
+                console.log('🎲 Autoplay: no search results found');
                 return;
             }
 
-            // Filter out non-music content
             const filteredResults = results.filter(track => {
-                // Skip if duration is missing
-                if (!track.duration) return false;
-                
-                // Duration limits: 30 seconds to 10 minutes (600 seconds)
-                // This filters out most tutorials, lessons, podcasts, and full movies
-                if (track.duration < 30 || track.duration > 600) return false;
-                
-                // Filter out common non-music keywords in title
+                if (track.duration && (track.duration < 30 || track.duration > 600)) return false;
+
                 const title = (track.title || '').toLowerCase();
                 const blockedKeywords = [
                     'tutorial', 'lesson', 'course', 'learn', 'learning',
                     'podcast', 'interview', 'talk', 'speech', 'lecture',
                     'review', 'unboxing', 'reaction', 'gameplay',
-                    'full movie', 'full album', 'full episode', 'documentary',
+                    'full movie', 'full episode', 'documentary',
                     'how to', 'guide', 'tips', 'tricks', 'vlog',
                     'practice', 'exercise', 'workout', 'meditation',
-                    'asmr', 'story', 'audiobook', 'mix |', 'compilation'
+                    'asmr', 'audiobook'
                 ];
-                
-                // Check if title contains any blocked keywords
-                const hasBlockedKeyword = blockedKeywords.some(keyword => title.includes(keyword));
-                if (hasBlockedKeyword) return false;
-                
-                // Filter out playlist-like content (mixes and compilations often have many emojis or brackets)
-                const emojiCount = (title.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
-                const bracketCount = (title.match(/[\[\]【】]/g) || []).length;
-                if (emojiCount > 3 || bracketCount > 4) return false;
-                
-                return true;
+                return !blockedKeywords.some(keyword => title.includes(keyword));
             });
 
+            console.log(`🎲 Autoplay: ${results.length} results → ${filteredResults.length} after filter`);
+
             if (filteredResults.length === 0) {
-                // Try again with a different keyword
-                const fallbackKeyword = keywords[Math.floor(Math.random() * keywords.length)];
-                const fallbackResults = await YouTube.search(fallbackKeyword, 10, this.guild.id);
-                const fallbackFiltered = (fallbackResults || []).filter(track => 
-                    track.duration >= 30 && track.duration <= 600
-                );
-                
-                if (fallbackFiltered.length === 0) {
-                    return;
-                }
-                
-                filteredResults.push(...fallbackFiltered);
+                console.log('🎲 Autoplay: all results filtered out, using unfiltered');
+                filteredResults.push(...results);
             }
 
-            // Pick random track from filtered results
             const randomTrack = filteredResults[Math.floor(Math.random() * filteredResults.length)];
+            console.log(`🎲 Autoplay: selected "${randomTrack.title}" (${randomTrack.duration}s)`);
             randomTrack.requestedBy = this.guild.members.me.user;
             randomTrack.addedAt = Date.now();
 
@@ -1740,17 +1512,7 @@ class MusicPlayer {
     }
 
     detectPlatform(query) {
-
-        if (query.includes('youtube.com') || query.includes('youtu.be')) {
-            return 'youtube';
-        } else if (query.includes('spotify.com')) {
-            return 'spotify';
-        } else if (query.includes('soundcloud.com')) {
-            return 'soundcloud';
-        } else if (query.match(/^https?:\/\/.*\.(mp3|wav|ogg|flac|m4a|aac|wma|opus|webm|mp4)$/i)) {
-            return 'direct';
-        }
-        return 'youtube'; // Default to YouTube search
+        return 'youtube';
     }
 
     // Preloading System
@@ -1781,34 +1543,7 @@ class MusicPlayer {
             let streamUrl = track.url;
             let streamInfo;
 
-            // Get stream URL first
-            switch (track.platform) {
-                case 'youtube':
-                    streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                    break;
-                case 'spotify':
-                    // Use cached YouTube URL if available
-                    if (track.youtubeUrl) {
-                        streamUrl = track.youtubeUrl;
-                        streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                    } else {
-                        // Quick YouTube search for Spotify
-                        const query = `"${track.title}" "${track.artist}"`;
-                        const results = await YouTube.search(query, 1, this.guild.id);
-                        if (results && results.length > 0) {
-                            streamUrl = results[0].url;
-                            track.youtubeUrl = streamUrl; // Cache for future use
-                            streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
-                        }
-                    }
-                    break;
-                case 'soundcloud':
-                    streamInfo = await SoundCloud.getStream(streamUrl, this.guild.id);
-                    break;
-                case 'direct':
-                    streamInfo = await DirectLink.getStream(streamUrl);
-                    break;
-            }
+            streamInfo = await YouTube.getStream(streamUrl, this.guild.id);
 
             if (streamInfo) {
                 // Download track in background
@@ -1878,322 +1613,6 @@ class MusicPlayer {
         }
     }
 
-    serializeTrack(track) {
-        if (!track) return null;
-
-        const requester = track.requestedBy || null;
-        const requesterId = requester?.id || track.requesterId || null;
-        const requesterTag = requester?.tag || requester?.user?.tag || track.requesterTag || null;
-
-        return {
-            id: track.id || null,
-            title: track.title || null,
-            url: track.url || null,
-            duration: typeof track.duration === 'number' ? track.duration : Number(track.duration) || null,
-            thumbnail: track.thumbnail || null,
-            artist: track.artist || null,
-            album: track.album || null,
-            platform: track.platform || null,
-            uploader: track.uploader || null,
-            youtubeUrl: track.youtubeUrl || null,
-            soundcloudUrl: track.soundcloudUrl || null,
-            spotifyUrl: track.spotifyUrl || null,
-            isLive: track.isLive || track.live || false,
-            addedAt: track.addedAt || Date.now(),
-            requesterId,
-            requesterTag,
-            extra: track.extra || null
-        };
-    }
-
-    deserializeTrack(data) {
-        if (!data) return null;
-
-        const track = {
-            id: data.id || null,
-            title: data.title || null,
-            url: data.url || null,
-            duration: typeof data.duration === 'number' ? data.duration : Number(data.duration) || null,
-            thumbnail: data.thumbnail || null,
-            artist: data.artist || null,
-            album: data.album || null,
-            platform: data.platform || null,
-            uploader: data.uploader || null,
-            youtubeUrl: data.youtubeUrl || null,
-            soundcloudUrl: data.soundcloudUrl || null,
-            spotifyUrl: data.spotifyUrl || null,
-            isLive: Boolean(data.isLive),
-            addedAt: data.addedAt || Date.now(),
-            extra: data.extra || null
-        };
-
-        if (data.requesterId) {
-            const cachedMember = this.guild?.members?.cache?.get?.(data.requesterId) || null;
-            track.requestedBy = cachedMember || { id: data.requesterId, tag: data.requesterTag || data.requesterId };
-            track.requesterId = data.requesterId;
-            track.requesterTag = data.requesterTag || null;
-        }
-
-        return track;
-    }
-
-    serializeState() {
-        const guildId = this.guild?.id;
-        if (!guildId) return null;
-
-        return {
-            guildId,
-            voiceChannelId: this.voiceChannel?.id || null,
-            textChannelId: this.textChannel?.id || null,
-            currentTrack: this.serializeTrack(this.currentTrack),
-            queue: this.queue.map(track => this.serializeTrack(track)).filter(Boolean),
-            previousTracks: this.previousTracks.slice(-10).map(track => this.serializeTrack(track)).filter(Boolean),
-            volume: this.volume,
-            loop: this.loop,
-            shuffle: this.shuffle,
-            autoplay: this.autoplay,
-            paused: this.paused,
-            pauseReasons: Array.from(this.pauseReasons || []),
-            playbackPositionMs: this.getCurrentTime() || 0,
-            currentTrackStartOffsetMs: this.currentTrackStartOffsetMs || 0,
-            lastPlaybackPosition: this.lastPlaybackPosition || 0,
-            requesterId: this.requesterId || null,
-            nowPlayingMessageId: this.nowPlayingMessage?.id || null,
-            nowPlayingChannelId: this.nowPlayingMessage?.channelId || this.textChannel?.id || null,
-            sessionId: this.sessionId,
-            downloadedFiles: Array.from(this.downloadedFiles || [])
-                .filter(Boolean)
-                .map(filepath => path.resolve(filepath)),
-            currentDownloadedFile: this.currentDownloadedFile ? path.resolve(this.currentDownloadedFile) : null,
-            updatedAt: Date.now()
-        };
-    }
-
-    async restoreFromState(state) {
-        if (!state || !this.guild?.id) return;
-        this.stopStateSync();
-        this.pauseReasons = new Set();
-        this.preloadedStreams.clear();
-        this.preloadingQueue = [];
-
-        this.volume = typeof state.volume === 'number' ? state.volume : this.volume;
-        this.loop = state.loop ?? false;
-        this.shuffle = state.shuffle ?? false;
-        this.autoplay = state.autoplay ?? false;
-        this.requesterId = state.requesterId || this.requesterId;
-
-        this.previousTracks = (state.previousTracks || [])
-            .map(serialized => this.deserializeTrack(serialized))
-            .filter(Boolean);
-
-        const restoredQueue = (state.queue || [])
-            .map(serialized => this.deserializeTrack(serialized))
-            .filter(Boolean);
-
-        this.queue = restoredQueue;
-        this.currentTrack = this.deserializeTrack(state.currentTrack) || null;
-
-        if (!this.currentTrack && this.queue.length > 0) {
-            this.currentTrack = this.queue.shift();
-        }
-
-        const validDownloads = new Set();
-        for (const file of state.downloadedFiles || []) {
-            if (!file) continue;
-            try {
-                // Resolve relative paths against CACHE_DIR
-                const fullPath = path.isAbsolute(file) ? file : path.join(CACHE_DIR, file);
-                if (fsSync.existsSync(fullPath)) {
-                    validDownloads.add(path.resolve(fullPath));
-                } else {
-                    console.log(`❌ Missing cached file: ${path.basename(file)}`);
-                }
-            } catch (error) {
-                console.log(`⚠️ Error checking file ${path.basename(file)}: ${error.message}`);
-            }
-        }
-        this.downloadedFiles = validDownloads;
-
-        if (state.currentDownloadedFile) {
-            const fullPath = path.isAbsolute(state.currentDownloadedFile) ? state.currentDownloadedFile : path.join(CACHE_DIR, state.currentDownloadedFile);
-            if (fsSync.existsSync(fullPath)) {
-                this.currentDownloadedFile = path.resolve(fullPath);
-            } else {
-                this.currentDownloadedFile = null;
-            }
-         } else {
-            this.currentDownloadedFile = null;
-         }
-
-        const resumeMsRaw = Number(state.playbackPositionMs) || 0;
-        const trackDurationMs = this.currentTrack?.duration ? Number(this.currentTrack.duration) * 1000 : null;
-        let resumeMs = Math.max(0, resumeMsRaw);
-        if (trackDurationMs && resumeMs > Math.max(trackDurationMs - 2000, 0)) {
-            resumeMs = 0;
-        }
-
-        this.currentTrackStartOffsetMs = Math.max(Number(state.currentTrackStartOffsetMs) || 0, 0);
-        this.lastPlaybackPosition = resumeMs;
-        this.paused = false;
-
-        if (!this.connection) {
-            try {
-                const connected = await this.connect();
-                if (!connected) {
-                    throw new Error('Failed to reconnect to voice channel');
-                }
-            } catch (error) {
-                console.error('❌ Failed to connect during restore:', error.message);
-                throw new Error('Failed to reconnect to voice channel');
-            }
-        }
-
-        if (!this.currentTrack) {
-            await PlayerStateManager.removeState(this.guild.id);
-            return;
-        }
-
-        await this.play(null, resumeMs);
-
-        if (this.resource?.volume) {
-            this.resource.volume.setVolume(this.volume / 100);
-        }
-
-        const embedManager = global.clients?.musicEmbedManager;
-        if (embedManager && this.textChannel) {
-            try {
-                const embed = await embedManager.createNowPlayingEmbed(this, this.currentTrack, this.guild.id);
-                const buttons = await embedManager.createControlButtons(this);
-
-                let nowPlayingMessage = null;
-                if (state.nowPlayingMessageId) {
-                    nowPlayingMessage = await this.textChannel.messages.fetch(state.nowPlayingMessageId).catch(() => null);
-                }
-
-                if (nowPlayingMessage) {
-                    await nowPlayingMessage.edit({ embeds: [embed], components: buttons });
-                    this.nowPlayingMessage = nowPlayingMessage;
-                } else {
-                    this.nowPlayingMessage = await this.textChannel.send({ embeds: [embed], components: buttons });
-                }
-            } catch (error) {
-                console.error('❌ Failed to rebuild now playing embed during restore:', error?.message || error);
-            }
-        }
-
-        if (this.textChannel && this.currentTrack) {
-            try {
-                const resumeMessage = await LanguageManager.getTranslation(this.guild.id, 'buttonhandler.music_resumed');
-                const positionSeconds = Math.floor(resumeMs / 1000);
-                const positionFormatted = this.formatDuration(positionSeconds);
-
-                await this.textChannel.send({
-                    content: `▶️ ${resumeMessage} • **${this.currentTrack.title || 'Unknown'}** (${positionFormatted})`
-                });
-            } catch (error) {
-                // Ignore if message cannot be sent
-            }
-        }
-
-        this.scheduleStatePersist('restored', 1000);
-    }
-
-    async persistState(reason = 'manual', immediate = false) {
-        try {
-            if (!this.guild?.id) return;
-
-            // Cancel pending save if this is immediate
-            if (immediate && this.pendingStateSave) {
-                clearTimeout(this.pendingStateSave);
-                this.pendingStateSave = null;
-            }
-
-            if (!this.currentTrack && this.queue.length === 0) {
-                await PlayerStateManager.removeState(this.guild.id);
-                return;
-            }
-
-            const state = this.serializeState();
-            if (!state) {
-                await PlayerStateManager.removeState(this.guild.id);
-                return;
-            }
-
-            state.reason = reason;
-            await PlayerStateManager.saveState(this.guild.id, state);
-        } catch (error) {
-            console.error(`❌ Failed to persist player state for guild ${this.guild?.id}:`, error.message || error);
-        }
-    }
-
-    startStateSync() {
-        if (this.stateSyncInterval) return;
-
-        this.stateSyncInterval = setInterval(() => {
-            if (!this.guild?.id) return;
-            if (!this.currentTrack && this.queue.length === 0) return;
-
-            this.persistState('interval').catch(() => {});
-        }, this.stateSyncIntervalMs);
-    }
-
-    stopStateSync() {
-        if (this.stateSyncInterval) {
-            clearInterval(this.stateSyncInterval);
-            this.stateSyncInterval = null;
-        }
-
-        this.cancelStateSave();
-    }
-
-    cancelStateSave() {
-        if (this.stateSaveTimeout) {
-            clearTimeout(this.stateSaveTimeout);
-            this.stateSaveTimeout = null;
-        }
-    }
-
-    // ==================== LYRICS SYSTEM ====================
-
-    async fetchAndStartLyrics() {
-        try {
-            if (!this.currentTrack) return;
-
-            // Fetch lyrics in background (no sync, button-only display)
-            this.currentLyrics = await LyricsManager.fetchLyrics(this.currentTrack);
-
-            if (this.currentLyrics && this.currentLyrics.plain) {
-                const sourceLabel = this.currentLyrics.source ? ` via ${this.currentLyrics.source}` : '';
-                // Update now playing embed to enable lyrics button
-                const embedManager = global.clients?.musicEmbedManager;
-                if (embedManager && this.nowPlayingMessage) {
-                    try {
-                        await embedManager.updateNowPlayingEmbed(this);
-                    } catch (error) {
-                        // Ignore update errors
-                    }
-                }
-            }
-        } catch (error) {
-            console.error('❌ Failed to fetch lyrics:', error.message);
-            this.currentLyrics = null;
-        }
-    }
-
-    hasLyrics() {
-        return Boolean(this.currentLyrics && this.currentLyrics.plain);
-    }
-
-    // ==================== END LYRICS SYSTEM ====================
-
-    scheduleStatePersist(reason = 'update', delay = 200) {
-        this.cancelStateSave();
-        this.stateSaveTimeout = setTimeout(() => {
-            this.stateSaveTimeout = null;
-            this.persistState(reason).catch(() => {});
-        }, Math.max(delay, 0));
-    }
-
     formatDuration(seconds) {
         // Ensure seconds is integer and handle floating point errors
         const totalSeconds = Math.floor(Number(seconds) || 0);
@@ -2202,30 +1621,19 @@ class MusicPlayer {
         return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
     }
 
-    cleanup(isShutdown = false) {
+    cleanup() {
         try {
             this.clearInactivityTimer(false);
-            this.stopStateSync();
 
-            // During shutdown, save state before cleanup
-            if (isShutdown && this.guild?.id) {
-                this.persistState('shutdown').catch(() => {});
-            } else if (this.guild?.id) {
-                PlayerStateManager.removeState(this.guild.id).catch(() => {});
+            if (this.currentDownloadedFile) {
+                this.deleteDownloadedFile(this.currentDownloadedFile);
+                this.currentDownloadedFile = null;
             }
 
-            // Clean up all downloaded files (unless shutdown)
-            if (!isShutdown) {
-                if (this.currentDownloadedFile) {
-                    this.deleteDownloadedFile(this.currentDownloadedFile);
-                    this.currentDownloadedFile = null;
-                }
-
-                for (const filepath of this.downloadedFiles) {
-                    this.deleteDownloadedFile(filepath);
-                }
-                this.downloadedFiles.clear();
+            for (const filepath of this.downloadedFiles) {
+                this.deleteDownloadedFile(filepath);
             }
+            this.downloadedFiles.clear();
 
             // Stop recovery system
             this.stopConnectionRecovery();

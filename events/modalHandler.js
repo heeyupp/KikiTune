@@ -1,6 +1,7 @@
 const { Events, EmbedBuilder } = require('discord.js');
 const config = require('../config');
 const LanguageManager = require('../src/LanguageManager');
+const MusicPlayer = require('../src/MusicPlayer');
 
 module.exports = {
     name: Events.InteractionCreate,
@@ -16,6 +17,10 @@ module.exports = {
             if (interaction.isStringSelectMenu()) {
                 if (interaction.customId.startsWith('autoplay_genre:')) {
                     await this.handleAutoplayGenre(interaction, client);
+                    return;
+                }
+                if (interaction.customId.startsWith('autoplay_start:')) {
+                    await this.handleAutoplayStart(interaction, client);
                     return;
                 }
             }
@@ -99,6 +104,54 @@ module.exports = {
         // Update the main embed to show autoplay is enabled
         if (client.musicEmbedManager) {
             await client.musicEmbedManager.updateNowPlayingEmbed(player);
+        }
+    },
+
+    async handleAutoplayStart(interaction, client) {
+        const guild = interaction.guild;
+        const member = interaction.member;
+
+        if (!member.voice.channel) {
+            return await interaction.reply({
+                content: '🔇 음성 채널에 먼저 접속해주세요.',
+                flags: [1 << 6]
+            });
+        }
+
+        const selectedGenre = interaction.values[0];
+
+        let player = client.players.get(guild.id);
+        if (!player) {
+            player = new MusicPlayer(guild, interaction.channel, member.voice.channel);
+            client.players.set(guild.id, player);
+        }
+
+        player.voiceChannel = member.voice.channel;
+        player.textChannel = interaction.channel;
+        player.autoplay = selectedGenre;
+
+        const genreLabels = {
+            kpop: 'K-POP', pop: 'POP', khiphop: '국내 힙합', hiphop: '해외 힙합',
+            jpop: 'J-POP', anime: '애니 OST', lofi: '로파이', ballad: '한국 발라드',
+            electronic: 'EDM / 일렉트로닉', metal: '헤비메탈', random: '랜덤'
+        };
+
+        const embed = new EmbedBuilder()
+            .setTitle('🎲 오토플레이 시작')
+            .setDescription(`**${genreLabels[selectedGenre] || selectedGenre}** 장르로 자동 재생을 시작합니다...`)
+            .setColor(config.bot.embedColor)
+            .setTimestamp();
+
+        await interaction.reply({ embeds: [embed], flags: [1 << 6] });
+
+        try {
+            await player.handleAutoplay();
+        } catch (error) {
+            console.error('❌ Autoplay start error:', error.message);
+            await interaction.followUp({
+                content: '❌ 오토플레이 시작에 실패했습니다.',
+                flags: [1 << 6]
+            });
         }
     },
 

@@ -118,62 +118,21 @@ module.exports = {
 
     async getTrackData(query, guildId) {
         const YouTube = require('../src/YouTube');
-        const Spotify = require('../src/Spotify');
-        const SoundCloud = require('../src/SoundCloud');
-        const DirectLink = require('../src/DirectLink');
 
         try {
             let tracks = [];
             let isPlaylist = false;
 
-            // Platform tespiti
-            const platform = this.detectPlatform(query);
-
-            switch (platform) {
-                case 'youtube':
-                    // YouTube playlist/video kontrolü
-                    if (YouTube.isPlaylist && YouTube.isPlaylist(query)) {
-                        const playlistData = await YouTube.getPlaylist(query, guildId);
-                        if (playlistData && playlistData.tracks && playlistData.tracks.length > 0) {
-                            tracks = playlistData.tracks;
-                            isPlaylist = true;
-                        } else {
-                            // Playlist yüklenemezse normal arama yap
-                            tracks = await YouTube.search(query, 1, guildId);
-                        }
-                    } else {
-                        tracks = await YouTube.search(query, 1, guildId);
-                    }
-                    break;
-
-                case 'spotify':
-                    // Check if it's a Spotify URL (playlist, album, track, or artist)
-                    if (Spotify.isSpotifyURL(query)) {
-                        const spotifyData = await Spotify.getFromURL(query, guildId);
-                        tracks = spotifyData || [];
-                        // Check if it's a playlist/album/artist (multiple tracks)
-                        const { type } = Spotify.parseSpotifyURL(query);
-                        isPlaylist = type === 'playlist' || type === 'album' || type === 'artist';
-                    } else {
-                        // Regular search
-                        const spotifyData = await Spotify.search(query, 1, 'track', guildId);
-                        tracks = spotifyData || [];
-                    }
-                    break;
-
-                case 'soundcloud':
-                    const soundcloudData = await SoundCloud.search(query, 1, guildId);
-                    tracks = soundcloudData || [];
-                    break;
-
-                case 'direct':
-                    const directData = await DirectLink.getInfo(query);
-                    tracks = directData || [];
-                    break;
-
-                default:
-                    // Varsayılan YouTube arama
+            if (YouTube.isPlaylist && YouTube.isPlaylist(query)) {
+                const playlistData = await YouTube.getPlaylist(query, guildId);
+                if (playlistData && playlistData.tracks && playlistData.tracks.length > 0) {
+                    tracks = playlistData.tracks;
+                    isPlaylist = true;
+                } else {
                     tracks = await YouTube.search(query, 1, guildId);
+                }
+            } else {
+                tracks = await YouTube.search(query, 1, guildId);
             }
 
             if (!tracks || tracks.length === 0) {
@@ -190,20 +149,6 @@ module.exports = {
         } catch (error) {
             const errorMsg = await LanguageManager.getTranslation(guildId, 'commands.play.error_searching');
             return { success: false, message: errorMsg };
-        }
-    },
-
-    detectPlatform(query) {
-        if (query.includes('youtube.com') || query.includes('youtu.be')) {
-            return 'youtube';
-        } else if (query.includes('spotify.com')) {
-            return 'spotify';
-        } else if (query.includes('soundcloud.com')) {
-            return 'soundcloud';
-        } else if (query.startsWith('http') && (query.includes('.mp3') || query.includes('.wav') || query.includes('.ogg'))) {
-            return 'direct';
-        } else {
-            return 'youtube'; // Default to YouTube search
         }
     }
 };
