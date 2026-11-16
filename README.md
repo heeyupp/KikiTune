@@ -1,3 +1,22 @@
+# KikiTune 🎵
+
+> 개인 디스코드 서버용으로 경량화한 YouTube 전용 음악봇입니다.
+>
+> **Based on [Beatra Discord Music Bot](https://github.com/umutxyp/MusicBot) by umutxyp (MIT License).** 원본 저작권 고지는 [LICENSE](LICENSE)에 그대로 유지하고 있습니다.
+
+## v1.0 — 원본(Beatra v16.0) 대비 변경 사항
+
+- **제거:** Spotify·SoundCloud·직접 링크 재생(YouTube 전용으로 통일), 가사, 세션 저장/복원, 샤딩, 언어팩 18개(한국어·영어만 유지)
+- **추가:** `/autoplay` — 곡 없이 장르만 골라 바로 자동 재생 시작, 오토플레이 중 스킵 버튼
+- **개선:** 봇 시작 시 yt-dlp가 14일 이상 지났으면 자동 갱신(YouTube 403 오류 방지), 오토플레이 장르 11개로 개편, 검색 키워드 연도 자동 반영, 같은 음성 채널 사용자 누구나 컨트롤 가능, 컴필레이션 영상 필터링, 긴 큐 표시 개선
+
+**Stack:** discord.js v14 · @discordjs/voice · youtube-dl-exec (yt-dlp) · prism-media · ffmpeg-static · Node.js 18+
+
+---
+
+<details>
+<summary>원본 Beatra README 보기</summary>
+
 <div align="center">
 
 # Beatra v16.0 🎶
@@ -645,3 +664,5 @@ Bug reports, feature ideas, and localization pull requests are all welcome. Swin
 
 
 Happy streaming, and keep the servers grooving! 🎧
+
+</details>
